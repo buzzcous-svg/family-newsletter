@@ -1,0 +1,12 @@
+[
+  {
+    "origin": [
+      "https://javierweekly-1fc65.web.app",
+      "https://javierweekly-1fc65.firebaseapp.com",
+      "http://localhost:5000"
+    ],
+    "method": ["GET"],
+    "maxAgeSeconds": 3600,
+    "responseHeader": ["Content-Type"]
+  }
+]

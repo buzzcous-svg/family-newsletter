@@ -1,0 +1,85 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+    // Guests who only entered the site password sign in anonymously and get read-only access —
+    // this excludes them from every write path below, even if they call the API directly.
+    function isRealUser() {
+      return signedIn() && request.auth.token.firebase.sign_in_provider != 'anonymous';
+    }
+    function isAdmin() {
+      return signedIn() &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true;
+    }
+    // Admin allowlist. Stored as settings/app.adminEmails (a lowercased string array) and edited
+    // from the app's Profile → Admin settings screen — no code change needed to add/remove an
+    // admin. Missing doc/field => nobody is auto-granted, but existing users/{uid}.isAdmin flags
+    // still stand (see isAdmin above), so this can't lock current admins out.
+    function bootstrapAdminEmails() {
+      return exists(/databases/$(database)/documents/settings/app)
+        ? get(/databases/$(database)/documents/settings/app).data.get('adminEmails', [])
+        : [];
+    }
+    function isBootstrapAdminEmail() {
+      return signedIn() && request.auth.token.email in bootstrapAdminEmails();
+    }
+
+    match /users/{userId} {
+      allow read: if signedIn();
+      // Invite-only signup: a brand-new profile doc is only allowed for bootstrap admins or an
+      // email with a matching invites/{email} doc. This is the real enforcement layer — it holds
+      // even if someone calls the Auth SDK directly and skips the app's own signup form/checks.
+      allow create: if isRealUser() && request.auth.uid == userId
+                     && request.resource.data.email == request.auth.token.email
+                     && request.resource.data.isAdmin == isBootstrapAdminEmail()
+                     && (isBootstrapAdminEmail()
+                         || exists(/databases/$(database)/documents/invites/$(request.resource.data.email)));
+      allow update: if isRealUser() && request.auth.uid == userId
+                     && (request.resource.data.isAdmin == resource.data.isAdmin
+                         || request.resource.data.isAdmin == isBootstrapAdminEmail());
+      allow delete: if false;
+    }
+
+    // Invite-only allowlist. Doc ID is the invited email (lowercased by the client). Anyone can
+    // check a specific email they already know (`get`), but only an admin can browse the full
+    // list (`list`) or add/remove invites. Once claimed, the invited user themselves is allowed
+    // to flip usedAt/usedByUid on their own invite doc (and only those two fields, only once).
+    match /invites/{email} {
+      allow get: if true;
+      allow list: if isAdmin();
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() ||
+        (isRealUser() && request.auth.token.email == resource.data.email
+         && resource.data.usedByUid == null
+         && request.resource.data.usedByUid == request.auth.uid
+         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['usedAt','usedByUid']));
+    }
+
+    match /posts/{postId} {
+      allow read: if signedIn();
+      allow create: if isRealUser() && request.resource.data.authorId == request.auth.uid;
+      // Anyone can contribute photos/videos to an Event Recap they didn't write — but only the
+      // media/featuredMediaId fields, nothing else about someone else's post.
+      allow update: if isRealUser() && (request.auth.uid == resource.data.authorId || isAdmin()
+                     || (resource.data.postType == 'Event Recap'
+                         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['media','featuredMediaId'])));
+      allow delete: if isRealUser() && (request.auth.uid == resource.data.authorId || isAdmin());
+    }
+
+    match /newsletters/{issueId} {
+      allow read: if signedIn();
+      allow create: if isAdmin();
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    match /settings/{docId} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+  }
+}

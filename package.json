@@ -1,0 +1,10 @@
+{
+  "name": "family-newsletter",
+  "private": true,
+  "scripts": {
+    "emulators": "firebase emulators:start"
+  },
+  "devDependencies": {
+    "firebase-tools": "^13.29.1"
+  }
+}

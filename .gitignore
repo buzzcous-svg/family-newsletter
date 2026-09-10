@@ -1,0 +1,11 @@
+node_modules/
+.tooling/
+.DS_Store
+.claude/settings.local.json
+functions/lib/
+functions/.secret.local
+.firebase/
+firebase-debug.log
+firebase-debug.*.log
+ui-debug.log
+*.log
