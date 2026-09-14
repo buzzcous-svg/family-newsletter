@@ -78,3 +78,19 @@ access regardless, because `users/{uid}.isAdmin` is not cleared by any of this.
 ### Rollback
 
 Hosting: `firebase hosting:rollback`. Rules/functions: redeploy from the previous git commit.
+
+## Reviewable changes & deploy protection
+
+Every change lands on `main` via a pull request, reviewed before merge — never a direct push.
+`firebase deploy` is then run manually from an up-to-date `main`, so nothing reaches production
+that hasn't gone through review first. This is the process today; two things would make it
+enforced rather than just documented, and are flagged here rather than changed silently:
+
+- **Branch protection on `main` is not yet turned on.** Enabling "Require a pull request before
+  merging" (Settings → Branches on GitHub) would make the reviewed-PR path mandatory instead of a
+  convention. This is a repo setting, not a code change, so it's called out here for a deliberate
+  decision rather than flipped automatically.
+- **The remote is currently public**, not private. The original plan (`mvp-launch-plan.md`)
+  assumed a private remote. Nothing in this repo is secret today (API keys and the guest password
+  are Firebase Function secrets, never committed — see "Configuration" above), but visibility is
+  a decision worth making explicitly rather than inheriting by default.
