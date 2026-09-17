@@ -17,7 +17,7 @@ email), with AI assistance for drafting copy and assembling issues.
 | Auth | Firebase Auth — email/password + anonymous (guests). |
 | Data | Cloud Firestore (`users`, `invites`, `posts`, `newsletters`, `settings/app`). |
 | Files | Firebase Storage under `uploads/{uid}/…` (25 MB, images/videos only). |
-| Backend | One 2nd-gen Cloud Functions codebase, `functions/` (TypeScript, Node 20): `runAIEditor` (Anthropic proxy) and `verifyGuestPassword`. |
+| Backend | One 2nd-gen Cloud Functions codebase, `functions/` (TypeScript, Node 20): `runAIEditor` (Anthropic proxy), `verifyGuestPassword`, and `scheduledFirestoreExport` (daily Firestore backup — see "Firestore backups" below). |
 | AI | Anthropic Messages API, model `claude-sonnet-5`. |
 
 ## Local development
@@ -78,3 +78,60 @@ access regardless, because `users/{uid}.isAdmin` is not cleared by any of this.
 ### Rollback
 
 Hosting: `firebase hosting:rollback`. Rules/functions: redeploy from the previous git commit.
+
+## Firestore backups
+
+A scheduled Cloud Function, `scheduledFirestoreExport` (`functions/src/index.ts`), exports every
+Firestore collection to Cloud Storage once a day (`America/Los_Angeles`, via
+`onSchedule("every 24 hours", ...)`), giving this app a restore path beyond Firestore's own
+point-in-time recovery window.
+
+**The function's code is deploy-ready, but three one-time, human setup steps are required before
+it actually runs successfully in production — none of these are things a code change can do on
+its own:**
+
+1. **Create a dedicated GCS bucket** for backups (do **not** reuse the app's default Storage
+   bucket — that bucket is world-readable by URL per `storage.rules`, and backups must not be).
+   E.g.:
+   ```bash
+   gcloud storage buckets create gs://javierweekly-1fc65-firestore-backups \
+     --location=us-central1 --uniform-bucket-level-access
+   ```
+2. **Set a retention/lifecycle policy** on that bucket so exports don't accumulate forever — e.g.
+   delete exports older than 30 days:
+   ```bash
+   cat > /tmp/backup-lifecycle.json <<'EOF'
+   {"rule": [{"action": {"type": "Delete"}, "condition": {"age": 30}}]}
+   EOF
+   gcloud storage buckets update gs://javierweekly-1fc65-firestore-backups \
+     --lifecycle-file=/tmp/backup-lifecycle.json
+   ```
+3. **Grant the Cloud Functions runtime service account export + write access**: the
+   `Cloud Datastore Import Export Admin` IAM role (`roles/datastore.importExportAdmin`) on the
+   project, plus `Storage Object Admin` (or equivalent write access) on the backup bucket.
+
+Then set the bucket as a deploy parameter and deploy:
+
+```bash
+# Firebase prompts for FIRESTORE_BACKUP_BUCKET on deploy if it isn't already set; or set it
+# non-interactively via a functions/.env.<project-id> file:
+echo 'FIRESTORE_BACKUP_BUCKET=gs://javierweekly-1fc65-firestore-backups' >> functions/.env.javierweekly-1fc65
+firebase deploy --only functions
+```
+
+If `FIRESTORE_BACKUP_BUCKET` isn't set, the function logs an error and skips the export rather
+than failing loudly with no destination.
+
+**Restoring from a backup:**
+
+```bash
+gcloud firestore import gs://javierweekly-1fc65-firestore-backups/<export-folder>
+```
+
+(list available exports first with `gcloud storage ls gs://javierweekly-1fc65-firestore-backups/`).
+An import merges into the live database rather than replacing it outright — for a full restore,
+export/back up current data first, then clear the collections you're restoring before importing.
+
+**Verifying it's actually running:** after the first deploy, check Cloud Functions logs
+(`firebase functions:log --only scheduledFirestoreExport`) the day after deploy, or check the
+Cloud Storage bucket directly for a new dated export folder.

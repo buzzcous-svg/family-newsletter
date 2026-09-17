@@ -1,7 +1,9 @@
 import { onCall, HttpsError } from "firebase-functions/v2/https";
-import { defineSecret } from "firebase-functions/params";
+import { onSchedule } from "firebase-functions/v2/scheduler";
+import { defineSecret, defineString } from "firebase-functions/params";
 import { initializeApp } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
+import { v1 as firestoreAdminV1 } from "@google-cloud/firestore";
 
 initializeApp();
 const anthropicApiKey = defineSecret("ANTHROPIC_API_KEY");
@@ -10,6 +12,12 @@ const anthropicApiKey = defineSecret("ANTHROPIC_API_KEY");
 //   firebase functions:secrets:set GUEST_PASSWORD
 // and locally via GUEST_PASSWORD in functions/.secret.local (see .secret.local.example).
 const guestPassword = defineSecret("GUEST_PASSWORD");
+
+// GCS bucket (as `gs://bucket-name`, no trailing slash) that scheduled Firestore exports are
+// written to. Left as a deploy-time parameter rather than hardcoded so the same code works
+// across projects. The bucket itself is NOT created by this code — see README.md ("Firestore
+// backups") for the one-time setup (bucket creation, retention policy, IAM grant) this depends on.
+const firestoreBackupBucket = defineString("FIRESTORE_BACKUP_BUCKET", { default: "" });
 
 function extractJSON(text: string): any {
   let t = text.trim().replace(/^```json/i, "").replace(/^```/, "").replace(/```$/, "").trim();
@@ -175,3 +183,43 @@ export const verifyGuestPassword = onCall({ secrets: [guestPassword], cors: true
   }
   return { ok: true };
 });
+
+// Scheduled Firestore backup (NFR-OPS-07 / WS-0.4, closes RISK-6). Exports every collection in
+// the default database to GCS once a day. This is the "turn on scheduled export" mechanism the
+// requirement calls for; the destination bucket's creation, retention/lifecycle policy, and the
+// runtime service account's export permission are one-time setup steps documented in README.md
+// ("Firestore backups") — they are infrastructure/ops decisions, not something this code can
+// provision on its own. If FIRESTORE_BACKUP_BUCKET isn't set at deploy time, the run logs an
+// error and skips rather than failing loudly at 3am with no bucket to write to.
+export const scheduledFirestoreExport = onSchedule(
+  { schedule: "every 24 hours", timeZone: "America/Los_Angeles" },
+  async () => {
+    const bucket = firestoreBackupBucket.value();
+    if (!bucket) {
+      console.error(
+        "scheduledFirestoreExport: FIRESTORE_BACKUP_BUCKET is not set - skipping this run. " +
+        "Set it via `firebase deploy --only functions` with the parameter prompted, or in " +
+        "functions/.env.<project-id>. See README.md 'Firestore backups' for the full setup."
+      );
+      return;
+    }
+
+    const client = new firestoreAdminV1.FirestoreAdminClient();
+    const projectId = await client.getProjectId();
+    const databaseName = client.databasePath(projectId, "(default)");
+
+    console.log(`scheduledFirestoreExport: starting export of ${databaseName} to ${bucket}`);
+    try {
+      const [operation] = await client.exportDocuments({
+        name: databaseName,
+        outputUriPrefix: bucket,
+        collectionIds: [], // empty = every collection
+      });
+      console.log(`scheduledFirestoreExport: export operation started - ${operation.name}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`scheduledFirestoreExport: export failed - ${message}`);
+      throw err;
+    }
+  }
+);
