@@ -2558,6 +2558,10 @@ function attachHandlers(){
     const adminEmails = [...new Set(
       (adminEmailsEl ? adminEmailsEl.value : '').split(/[\s,;]+/).map(e=>e.trim().toLowerCase()).filter(Boolean)
     )];
+    if(adminEmails.length === 0){
+      showToast('At least one admin email is required — this would lock everyone out of admin settings.');
+      return;
+    }
     await setDoc(doc(db,'settings','app'), {familyName, adminEmails}, {merge:true});
     state.adminEmails = adminEmails;
     showToast('Settings saved'); render();
