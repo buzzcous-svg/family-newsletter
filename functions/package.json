@@ -11,7 +11,8 @@
     "serve": "npm run build && firebase emulators:start --only functions",
     "shell": "npm run build && firebase functions:shell",
     "deploy": "firebase deploy --only functions",
-    "logs": "firebase functions:log"
+    "logs": "firebase functions:log",
+    "test": "tsc && node --test lib/index.test.js"
   },
   "dependencies": {
     "@google-cloud/firestore": "^7.11.0",
