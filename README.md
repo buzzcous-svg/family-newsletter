@@ -83,14 +83,14 @@ Hosting: `firebase hosting:rollback`. Rules/functions: redeploy from the previou
 
 Every change lands on `main` via a pull request, reviewed before merge — never a direct push.
 `firebase deploy` is then run manually from an up-to-date `main`, so nothing reaches production
-that hasn't gone through review first. This is the process today; two things would make it
-enforced rather than just documented, and are flagged here rather than changed silently:
+that hasn't gone through review first.
 
-- **Branch protection on `main` is not yet turned on.** Enabling "Require a pull request before
-  merging" (Settings → Branches on GitHub) would make the reviewed-PR path mandatory instead of a
-  convention. This is a repo setting, not a code change, so it's called out here for a deliberate
-  decision rather than flipped automatically.
-- **The remote is currently public**, not private. The original plan (`mvp-launch-plan.md`)
-  assumed a private remote. Nothing in this repo is secret today (API keys and the guest password
-  are Firebase Function secrets, never committed — see "Configuration" above), but visibility is
-  a decision worth making explicitly rather than inheriting by default.
+- **Branch protection on `main` is enabled** (Settings → Branches on GitHub): a pull request is
+  required before merging, and direct pushes and branch deletion are blocked. Required approvals
+  are set to 0 since the PR author and merger are currently the same account. This makes the
+  reviewed-PR path enforced by GitHub, not just a documented convention.
+- **The remote is public**, not private, as a deliberate trade-off rather than an oversight. The
+  original plan (`mvp-launch-plan.md`) assumed a private remote, but GitHub branch protection on
+  a private repo requires a paid plan on a personal account. Staying public keeps branch
+  protection on the free tier. Nothing in this repo is secret today (API keys and the guest
+  password are Firebase Function secrets, never committed — see "Configuration" above).
