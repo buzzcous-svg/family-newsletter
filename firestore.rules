@@ -79,7 +79,16 @@ service cloud.firestore {
 
     match /settings/{docId} {
       allow read: if signedIn();
-      allow write: if isAdmin();
+      allow create, delete: if isAdmin();
+      // Same as a plain isAdmin() write, except: a write to settings/app that would leave
+      // adminEmails empty is rejected. adminEmails is re-synced to users/{uid}.isAdmin on every
+      // sign-in (see FR-AUTH-03) and is the only way to regain admin access from the UI, so an
+      // empty list would lock every family member out of admin settings with no way back in
+      // short of editing Firestore by hand (RISK-10).
+      allow update: if isAdmin() &&
+        (docId != 'app'
+         || !('adminEmails' in request.resource.data)
+         || request.resource.data.adminEmails.size() > 0);
     }
   }
 }
