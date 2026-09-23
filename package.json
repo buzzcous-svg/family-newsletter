@@ -2,7 +2,8 @@
   "name": "family-newsletter",
   "private": true,
   "scripts": {
-    "emulators": "firebase emulators:start"
+    "emulators": "firebase emulators:start",
+    "test": "node --test test/*.test.js"
   },
   "devDependencies": {
     "firebase-tools": "^13.29.1"

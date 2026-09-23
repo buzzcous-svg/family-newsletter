@@ -300,6 +300,9 @@
   textarea{min-height:90px; resize:vertical;}
   .row2{display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:24px;}
   .row2 label{margin-top:0;}
+  .checkbox-row{display:flex; align-items:center; gap:8px; margin:24px 0 0; text-transform:none; cursor:pointer;}
+  .checkbox-row input[type=checkbox]{width:18px; height:18px; flex-shrink:0; accent-color:var(--ink); cursor:pointer;}
+  .checkbox-row span{font-size:14px; font-weight:500; letter-spacing:normal; color:var(--ink);}
   .ai-desc-row{
     display:flex; align-items:center; justify-content:space-between; gap:10px;
     flex-wrap:wrap; margin:2px 0 8px;
@@ -779,6 +782,8 @@ const todayISO = () => {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 };
+const dateToISO = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+const todayDate = () => { const d = new Date(); d.setHours(0,0,0,0); return d; };
 const fmtDate = (iso) => { if(!iso) return ''; const d=new Date(iso+'T00:00:00'); return d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); };
 const fmtDateFull = (iso) => { if(!iso) return ''; const d=new Date(iso+'T00:00:00'); return d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric'}); };
 const isWithinNextWeek = (iso) => {
@@ -833,6 +838,55 @@ const CATEGORIES = Object.keys(CATEGORY_ICON);
 const POST_TYPES = ['Upcoming Event','General Announcement','Event Recap','Classifieds'];
 const TYPE_COLOR = {'Upcoming Event':'var(--marigold)','General Announcement':'var(--moss)','Event Recap':'var(--berry)','Classifieds':'#6B5B95'};
 const FILTERS = ['All','Upcoming Event','Event Recap','General Announcement','Classifieds'];
+
+const RECURRENCE_FREQUENCIES = ['monthly','yearly'];
+const RECURRENCE_LABELS = {monthly:'Monthly', yearly:'Yearly'};
+
+/* Recurring only applies to Upcoming Event posts: post.eventDate anchors the series, and every
+   later monthly/yearly date that matches it counts as an occurrence for the feed & calendar. */
+function isRecurringPost(p){
+  return p.postType==='Upcoming Event' && !!(p.recurring && p.recurring.enabled) && RECURRENCE_FREQUENCIES.includes(p.recurring.frequency);
+}
+// True if `p` has an occurrence (original or recurring) landing exactly on `dateKey` (YYYY-MM-DD).
+function eventOccursOnDate(p, dateKey){
+  if(!p.eventDate || dateKey < p.eventDate) return false;
+  if(dateKey === p.eventDate) return true;
+  if(!isRecurringPost(p)) return false;
+  const anchor = new Date(p.eventDate+'T00:00:00');
+  const target = new Date(dateKey+'T00:00:00');
+  return p.recurring.frequency === 'yearly'
+    ? anchor.getDate()===target.getDate() && anchor.getMonth()===target.getMonth()
+    : anchor.getDate()===target.getDate();
+}
+// ISO date of the next occurrence of `p` on/after `fromDate` (a Date at local midnight), or null if
+// it has none (already past and not recurring). Both branches skip a candidate date that doesn't
+// really exist (e.g. a 31st in a 30-day month, or Feb 29 in a non-leap year) rather than letting
+// JS's Date silently normalize it to a nearby date — consistent with eventOccursOnDate's matching.
+function nextOccurrenceISO(p, fromDate){
+  if(!p.eventDate) return null;
+  const fromKey = dateToISO(fromDate);
+  if(p.eventDate >= fromKey) return p.eventDate;
+  if(!isRecurringPost(p)) return null;
+  const anchor = new Date(p.eventDate+'T00:00:00');
+  const day = anchor.getDate();
+  if(p.recurring.frequency === 'yearly'){
+    const month = anchor.getMonth();
+    let year = fromDate.getFullYear();
+    for(let i=0;i<8;i++){ // a Feb 29 anchor only recurs every leap year (~every 4 years)
+      const candidate = new Date(year, month, day);
+      if(candidate.getDate()===day && candidate.getMonth()===month && candidate >= fromDate) return dateToISO(candidate);
+      year++;
+    }
+    return null;
+  }
+  let year = fromDate.getFullYear(), month = fromDate.getMonth();
+  for(let i=0;i<24;i++){
+    const candidate = new Date(year, month, day);
+    if(candidate.getDate()===day && candidate >= fromDate) return dateToISO(candidate);
+    month++; if(month>11){month=0; year++;}
+  }
+  return null;
+}
 
 function img(seed){ return `https://picsum.photos/seed/${seed}/900/600`; }
 function mediaImg(seed){ return {id:uid(), type:'image', url:img(seed)}; }
@@ -1300,6 +1354,7 @@ function renderPostDetail(){
             <div class="meta-item"><span class="meta-label">Text</span><span class="meta-val">${escapeHtml(post.authorName)}</span></div>
             <div class="meta-item"><span class="meta-label">Date</span><span class="meta-val">${meta.dateLabel}</span></div>
             <div class="meta-item"><span class="meta-label">Read</span><span class="meta-val">${meta.readMin} Min</span></div>
+            ${isRecurringPost(post) ? `<div class="meta-item"><span class="meta-label">Repeats</span><span class="meta-val">${RECURRENCE_LABELS[post.recurring.frequency]}</span></div>` : ''}
           </div>
           ${post.description ? `<p class="pd-desc">${escapeHtml(post.description)}</p>` : ''}
         </div>
@@ -1386,7 +1441,7 @@ function matchesFilter(p, f){
   if(f==='All') return true;
   return p.postType === f;
 }
-function isTodayEvent(p){ return p.postType==='Upcoming Event' && p.eventDate === todayISO(); }
+function isTodayEvent(p){ return p.postType==='Upcoming Event' && eventOccursOnDate(p, todayISO()); }
 
 /* posts created before createdAtMs existed fall back to their date-only createdAt,
    so day-level ordering still works even without millisecond precision */
@@ -1438,7 +1493,10 @@ function HomeView(){
 }
 
 function postMetaFields(p){
-  const dateLabel = EVENT_DATED_TYPES.includes(p.postType) ? fmtDateFull(p.eventDate) : fmtDateFull(p.createdAt);
+  // A recurring event's own eventDate is just the series' anchor — once that date has passed,
+  // show the next occurrence instead so this doesn't read as a stale date next to a live post.
+  const eventDateForDisplay = isRecurringPost(p) ? (nextOccurrenceISO(p, todayDate()) || p.eventDate) : p.eventDate;
+  const dateLabel = EVENT_DATED_TYPES.includes(p.postType) ? fmtDateFull(eventDateForDisplay) : fmtDateFull(p.createdAt);
   const words = (p.description||'').trim().split(/\s+/).filter(Boolean).length;
   const readMin = Math.max(1, Math.round(words/130));
   return {dateLabel, readMin};
@@ -1510,9 +1568,14 @@ function SidebarUpcomingEvents(){
     <button class="side-toggle" data-toggle-upcoming title="${collapsed?'Expand':'Collapse'}" aria-label="${collapsed?'Expand':'Collapse'} upcoming events">${collapsed?'▾':'▴'}</button>
   </div>`;
   const now = new Date(); now.setHours(0,0,0,0);
+  // Each entry pairs a post with the ISO date of its next occurrence (its own eventDate for a
+  // one-off event, or the next matching monthly/yearly date for a recurring one) so a recurring
+  // event whose original eventDate has already passed still surfaces here.
   const events = state.posts
-    .filter(p=>p.postType==='Upcoming Event' && p.eventDate && new Date(p.eventDate+'T00:00:00') >= now)
-    .sort((a,b)=> new Date(a.eventDate) - new Date(b.eventDate));
+    .filter(p=>p.postType==='Upcoming Event' && p.eventDate)
+    .map(p=>({post:p, occursOn: nextOccurrenceISO(p, now)}))
+    .filter(e=>e.occursOn)
+    .sort((a,b)=> a.occursOn.localeCompare(b.occursOn));
   if(!events.length){
     return `<div class="side-card upcoming-events-card">${heading}${collapsed ? '' : `<div class="side-empty">Nothing on the calendar yet.</div><button class="btn secondary small" data-view="calendar" style="margin:0 16px 14px;width:calc(100% - 32px);">View full calendar</button>`}</div>`;
   }
@@ -1522,7 +1585,7 @@ function SidebarUpcomingEvents(){
   const wk = getWeekRange(now);
   const groups = {};
   events.forEach(e=>{
-    const d = new Date(e.eventDate+'T00:00:00');
+    const d = new Date(e.occursOn+'T00:00:00');
     const key = (d>=wk.start && d<=wk.end) ? 'This Week' : d.toLocaleDateString('en-US',{month:'long', year:'numeric'});
     if(!groups[key]) groups[key] = [];
     groups[key].push(e);
@@ -1530,7 +1593,7 @@ function SidebarUpcomingEvents(){
   const order = Object.keys(groups).sort((a,b)=>{
     if(a==='This Week') return -1;
     if(b==='This Week') return 1;
-    return new Date(groups[a][0].eventDate) - new Date(groups[b][0].eventDate);
+    return groups[a][0].occursOn.localeCompare(groups[b][0].occursOn);
   });
   return `
   <div class="side-card upcoming-events-card">
@@ -1538,9 +1601,9 @@ function SidebarUpcomingEvents(){
     ${order.map(g=>`
       <div class="side-group-label">${escapeHtml(g)}</div>
       ${groups[g].map(e=>`
-        <div class="side-event ${isTodayEvent(e) ? 'today-highlight' : ''}" data-jump-post="${e.id}" aria-label="Jump to: ${escapeHtml(e.title)}">
-          <div class="se-date">${new Date(e.eventDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'short'})}<br>${new Date(e.eventDate+'T00:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'})}</div>
-          <div class="se-title">${escapeHtml(e.title)}${isTodayEvent(e) ? ' <span class="today-badge inline">Today</span>' : ''}</div>
+        <div class="side-event ${isTodayEvent(e.post) ? 'today-highlight' : ''}" data-jump-post="${e.post.id}" aria-label="Jump to: ${escapeHtml(e.post.title)}">
+          <div class="se-date">${new Date(e.occursOn+'T00:00:00').toLocaleDateString('en-US',{weekday:'short'})}<br>${new Date(e.occursOn+'T00:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'})}</div>
+          <div class="se-title">${escapeHtml(e.post.title)}${isTodayEvent(e.post) ? ' <span class="today-badge inline">Today</span>' : ''}</div>
         </div>`).join('')}
     `).join('')}
     <button class="btn secondary small" data-view="calendar" style="margin:14px 16px 16px;width:calc(100% - 32px);">View full calendar</button>
@@ -1571,11 +1634,19 @@ function CalendarView(){
   const daysInMonth = new Date(year, month+1, 0).getDate();
 
   const postsByDate = {};
+  const addOnDate = (dateKey, p) => { if(!postsByDate[dateKey]) postsByDate[dateKey] = []; postsByDate[dateKey].push(p); };
   state.posts.forEach(p=>{
+    if(isRecurringPost(p)){
+      // Expand a recurring event into every occurrence that lands within the currently viewed
+      // month, rather than only its original anchor date.
+      for(let day=1; day<=daysInMonth; day++){
+        const dateKey = `${year}-${String(month+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+        if(eventOccursOnDate(p, dateKey)) addOnDate(dateKey, p);
+      }
+      return;
+    }
     const dateKey = postCalendarDate(p);
-    if(!dateKey) return;
-    if(!postsByDate[dateKey]) postsByDate[dateKey] = [];
-    postsByDate[dateKey].push(p);
+    if(dateKey) addOnDate(dateKey, p);
   });
 
   const cells = [];
@@ -1679,7 +1750,7 @@ function letterboxImg(url, alt, wrapClass, eager){
 const EVENT_DATED_TYPES = ['Upcoming Event','Event Recap'];
 
 function CreateView(){
-  if(!draftPost) draftPost = {title:'',description:'',postType:'General Announcement',category:'General',eventDate:'',media:[],featuredMediaId:null,uploadingCount:0};
+  if(!draftPost) draftPost = {title:'',description:'',postType:'General Announcement',category:'General',eventDate:'',media:[],featuredMediaId:null,uploadingCount:0,recurring:{enabled:false,frequency:'monthly'}};
   const d = draftPost;
   const isEditing = !!editingPostId;
   return `
@@ -1704,6 +1775,17 @@ function CreateView(){
     ${EVENT_DATED_TYPES.includes(d.postType) ? `
       <label for="f-date">${d.postType==='Event Recap' ? 'When did this happen?' : 'Event date'}</label>
       <input type="date" id="f-date" value="${d.eventDate||''}">
+    ` : ''}
+
+    ${d.postType==='Upcoming Event' ? `
+      <label class="checkbox-row" for="f-recurring">
+        <input type="checkbox" id="f-recurring" ${d.recurring && d.recurring.enabled ? 'checked' : ''}>
+        <span>This event repeats</span>
+      </label>
+      ${d.recurring && d.recurring.enabled ? `
+        <label for="f-recurring-freq">Repeats</label>
+        <select id="f-recurring-freq">${RECURRENCE_FREQUENCIES.map(f=>`<option value="${f}" ${d.recurring.frequency===f?'selected':''}>${RECURRENCE_LABELS[f]}</option>`).join('')}</select>
+      ` : ''}
     ` : ''}
 
     <label for="f-desc">Description</label>
@@ -2373,7 +2455,8 @@ function attachHandlers(){
     draftPost = {
       title:post.title, description:post.description||'', postType:post.postType,
       category:post.category, eventDate:post.eventDate||'', media:[...post.media],
-      featuredMediaId: post.featuredMediaId||null, uploadingCount:0
+      featuredMediaId: post.featuredMediaId||null, uploadingCount:0,
+      recurring: post.recurring ? {...post.recurring} : {enabled:false, frequency:'monthly'}
     };
     state.view='create'; render();
   }));
@@ -2416,11 +2499,19 @@ function attachHandlers(){
   const tType = document.getElementById('f-type');
   const tCat = document.getElementById('f-category');
   const tDate = document.getElementById('f-date');
+  const tRecurring = document.getElementById('f-recurring');
+  const tRecurringFreq = document.getElementById('f-recurring-freq');
   if(tTitle) tTitle.addEventListener('input', e=>draftPost.title=e.target.value);
   if(tDesc) tDesc.addEventListener('input', e=>draftPost.description=e.target.value);
   if(tCat) tCat.addEventListener('change', e=>draftPost.category=e.target.value);
   if(tDate) tDate.addEventListener('input', e=>draftPost.eventDate=e.target.value);
   if(tType) tType.addEventListener('change', e=>{ draftPost.postType=e.target.value; render(); });
+  if(tRecurring) tRecurring.addEventListener('change', e=>{
+    if(!draftPost.recurring) draftPost.recurring = {enabled:false, frequency:'monthly'};
+    draftPost.recurring.enabled = e.target.checked;
+    render();
+  });
+  if(tRecurringFreq) tRecurringFreq.addEventListener('change', e=>draftPost.recurring.frequency=e.target.value);
 
   const zone = document.getElementById('upload-zone');
   const fileInput = document.getElementById('f-file');
@@ -2558,6 +2649,10 @@ function attachHandlers(){
     const adminEmails = [...new Set(
       (adminEmailsEl ? adminEmailsEl.value : '').split(/[\s,;]+/).map(e=>e.trim().toLowerCase()).filter(Boolean)
     )];
+    if(adminEmails.length === 0){
+      showToast('At least one admin email is required — this would lock everyone out of admin settings.');
+      return;
+    }
     await setDoc(doc(db,'settings','app'), {familyName, adminEmails}, {merge:true});
     state.adminEmails = adminEmails;
     showToast('Settings saved'); render();
@@ -2637,11 +2732,17 @@ async function publishPost(){
   if(!d.title || !d.postType){ showToast('Title and post type are required'); return; }
   if(EVENT_DATED_TYPES.includes(d.postType) && !d.eventDate){ showToast('Add the event date'); return; }
 
+  // Recurring only means anything for Upcoming Event, and only once a frequency is actually set —
+  // never persist a stray recurring flag against a post type that can't use it.
+  const recurring = d.postType==='Upcoming Event' && d.recurring && d.recurring.enabled
+    ? {enabled:true, frequency: RECURRENCE_FREQUENCIES.includes(d.recurring.frequency) ? d.recurring.frequency : 'monthly'}
+    : null;
+
   if(editingPostId){
     await updateDoc(doc(db,'posts',editingPostId), {
       title:d.title, description:d.description, postType:d.postType,
       category:d.category, eventDate:d.eventDate||null, media:d.media,
-      featuredMediaId:d.featuredMediaId||null, updatedAt: todayISO()
+      featuredMediaId:d.featuredMediaId||null, updatedAt: todayISO(), recurring
     });
     showToast('Post updated');
   }else{
@@ -2649,7 +2750,7 @@ async function publishPost(){
       authorId: state.user.uid, authorName:`${state.user.firstName} ${state.user.lastName}`,
       title:d.title, description:d.description, postType:d.postType, category:d.category,
       eventDate:d.eventDate||null, featuredMediaId:d.featuredMediaId||null,
-      createdAt: todayISO(), createdAtMs: Date.now(), media:d.media, newsletterIds:[]
+      createdAt: todayISO(), createdAtMs: Date.now(), media:d.media, newsletterIds:[], recurring
     });
     showToast('Post published');
   }
